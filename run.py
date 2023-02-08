@@ -7,11 +7,8 @@ import sys
 
 import numpy as np
 from ase.io.xyz import simple_write_xyz
-from ase.calculators.psi4 import Psi4
-from xtb.ase.calculator import XTB
-import torchani
 
-from confopt.setup import get_initial_structure, detect_dihedrals, fix_cyclopropenyl
+from confopt.setup import *
 from confopt.solver import run_optimization
 
 logger = logging.getLogger('confsolve')
@@ -19,16 +16,25 @@ logger = logging.getLogger('confsolve')
 if __name__ == "__main__":
     # Parse the command line arguments
     parser = ArgumentParser()
-    parser.add_argument('smiles', type=str, help='SMILES string of molecule to optimize')
+    parser.add_argument('--smiles', type=str, help='SMILES string of molecule to optimize')
+    parser.add_argument('--file', type=str, help='File containing the structure to optimize')
     parser.add_argument('--num-steps', type=int, default=32, help='Number of optimization steps to take')
     parser.add_argument('--init-steps', type=int, default=4, help='Number of initial guesses to make')
-    parser.add_argument('--level', choices=['xtb', 'ani', 'b3lyp'], default='xtb', help='Level of quantum chemistry')
+    parser.add_argument('--level', choices=['ani', 'b3lyp', 'b97', 'gfn0', 'gfn2', 'gfnff'], default='gfn2', help='Energy method')
     parser.add_argument('--relax', action='store_true', help='Relax the non-dihedral degrees of freedom before computing energy')
     args = parser.parse_args()
 
+    if args.smiles is None and args.file is None:
+        raise ValueError('Must specify either --smiles or --file')
+
+    if args.smiles is not None:
+        name = args.smiles
+    else:
+        name = Path(args.file).stem
+
     # Make an output directory
     params_hash = hashlib.sha256(str(args.__dict__).encode()).hexdigest()
-    out_dir = Path(__file__).parent.joinpath(f'solutions/{args.smiles}-{args.level}-{params_hash[-6:]}')
+    out_dir = Path(__file__).parent.joinpath(f'solutions/{name}-{args.level}-{params_hash[-6:]}')
     out_dir.mkdir(parents=True, exist_ok=True)
     with out_dir.joinpath('run_params.json').open('w') as fp:
         json.dump(args.__dict__, fp)
@@ -37,26 +43,19 @@ if __name__ == "__main__":
     handlers = [logging.FileHandler(out_dir.joinpath('runtime.log')),
                 logging.StreamHandler(sys.stdout)]
 
-
-    class ParslFilter(logging.Filter):
-        """Filter out Parsl debug logs"""
-
-        def filter(self, record):
-            return not (record.levelno == logging.DEBUG and '/parsl/' in record.pathname)
-
-
-    for h in handlers:
-        h.addFilter(ParslFilter())
-
     logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                         level=logging.INFO, handlers=handlers)
-    logger.info(f'Started optimizing the conformers for {args.smiles}')
+    logger.info(f'Started optimizing the conformers for {name}')
 
     # Make the initial guess
-    init_atoms, mol = get_initial_structure(args.smiles)
+    if args.file is None:
+        init_atoms, mol = get_initial_structure(args.smiles)
+    else:
+        init_atoms, mol = get_initial_structure_from_file(args.file)
     logger.info(f'Determined initial structure with {len(init_atoms)} atoms')
-    
+
     # Fix cycloprop. rings
+    # TODO: have optional cleanups
     init_atoms = fix_cyclopropenyl(init_atoms, mol)
 
     # Detect the dihedral angles
@@ -69,13 +68,26 @@ if __name__ == "__main__":
 
     # Set up the optimization problem
     if args.level == 'ani':
+        import torchani
         calc = torchani.models.ANI2x().ase()
-    elif args.level == 'xtb':
-        calc = XTB()
+    elif args.level == 'xtb' or args.level == 'gfn2':
+        from xtb.ase.calculator import XTB
+        calc = XTB() #gfn2
+    elif args.level == 'gfn0':
+        from xtb.ase.calculator import XTB
+        calc = XTB(method='gfn0')
+    elif args.level == 'gfnff':
+        from xtb.ase.calculator import XTB
+        calc = XTB(method='gfnff')
     elif args.level == 'b3lyp':
-        calc = Psi4(method='b3lyp', basis='3-21g', num_threads=4, multiplicity=1, charge=1)
+        from ase.calculators.psi4 import Psi4
+        calc = Psi4(method='b3lyp-D3MBJ2B', basis='def2-svp', num_threads=4, multiplicity=1, charge=0)
+    elif args.level == 'b97':
+        from ase.calculators.psi4 import Psi4
+        calc = Psi4(method='b97-d3bj', basis='def2-svp', num_threads=4, multiplicity=1, charge=0)
     else:
         raise ValueError(f'Unrecognized QC level: {args.level}')
+
     final_atoms = run_optimization(init_atoms, dihedrals, args.num_steps, calc, args.init_steps,
                                    out_dir, relax=args.relax)
 

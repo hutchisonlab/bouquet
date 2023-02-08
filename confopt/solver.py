@@ -1,28 +1,25 @@
 """Methods for solving the conformer option problem"""
 import logging
-import warnings
 from csv import DictWriter
 from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from typing import List, Optional
 
-from botorch.optim import optimize_acqf
-from modAL.acquisition import max_EI
-from sklearn.gaussian_process import GaussianProcessRegressor, kernels
-from scipy.optimize import minimize
-from modAL.models import BayesianOptimizer
+from ase import Atoms
 from ase.calculators.calculator import Calculator
 from ase.io.xyz import simple_write_xyz
 import torch
-from botorch.acquisition import UpperConfidenceBound
+
+from botorch.optim import optimize_acqf
+from botorch.acquisition import UpperConfidenceBound, ExpectedImprovement
 from botorch.models import SingleTaskGP
 from botorch.fit import fit_gpytorch_model
 from botorch.utils import standardize
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from gpytorch import kernels as gpykernels
 from gpytorch.priors import NormalPrior
-from ase import Atoms
+
 import numpy as np
 
 from confopt.assess import evaluate_energy, relax_structure
@@ -30,105 +27,6 @@ from confopt.setup import DihedralInfo
 
 
 logger = logging.getLogger(__name__)
-
-
-def _elementwise_expsine_kernel(x, y, gamma=10, p=360):
-    """Compute the exponential sine kernel
-
-    Args:
-        x, y: Coordinates to be compared
-        gamma: Length scale of the kernel
-        p: Periodicity of the kernel
-    Returns:
-        Kernel metric
-    """
-
-    # Compute the distances between the two points
-    dists = np.subtract(x, y)
-
-    # Compute the sine with a periodicity of p
-    sine_dists = np.sin(np.pi * dists / p)
-
-    # Return exponential of the squared kernel
-    return np.sum(np.exp(-2 * np.power(sine_dists, 2) / gamma ** 2), axis=-1)
-
-
-def _get_search_space(optimizer: BayesianOptimizer, n_dihedrals: int, n_samples: int = 32, width: float = 60):
-    """Generate many samples by adding zero-mean Gaussian noise to the current minimum
-
-    Args:
-        optimizer: Optimizer being used to perform Bayesian optimization
-        n_dihedrals: Number of dihedrals to optimize
-        n_samples: Number of initial starts of the optimizer to use.
-            Will return all points sampled by the optimizer
-        width: Width of the 
-    Returns:
-        List of points to be considered
-    """
-
-    # Generate random starting points
-    init_points = np.random.normal(0, width, size=(n_samples, n_dihedrals))
-    best_point = np.array(optimizer.X_max)
-    init_points += best_point[None, :]
-    
-    # Use local optimization to find the minima near these
-    #  See: https://docs.scipy.org/doc/scipy/reference/optimize.minimize-powell.html#optimize-minimize-powell
-    final_points = []
-    for init_point in init_points:
-        result = minimize(
-            # Define the function to be optimized
-            lambda x: -optimizer.predict([x]),  # Model predicts the negative energy and requires a 2D array,
-            init_point,  # Initial guess
-            method='nelder-mead',  # A derivative-free optimizer
-        )
-        final_points.append(result.x)
-
-    # Combine the results from the optimizer with the initial points sampled
-    all_points = np.vstack([
-        init_points,
-        final_points
-    ])
-    return all_points
-
-
-def select_next_points_modal(observed_X: List[List[float]], observed_y: List[float]) -> np.ndarray:
-    """Generate the next sample to evaluate with XTB
-
-    Uses modAL to pick the next sample using Expected Improvement
-
-    Args:
-        observed_X: Observed coordinates
-        observed_y: Observed energies
-    Returns:
-        Next coordinates to try
-    """
-
-    # Make the inputs to arrays
-    observed_X = np.array(observed_X)
-    observed_y = np.array(observed_y)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
-        # Prepare an a machine learning model
-        gpr = GaussianProcessRegressor(
-            kernel=kernels.PairwiseKernel(metric=_elementwise_expsine_kernel),
-            n_restarts_optimizer=8
-        )
-
-        # Build an optimizer
-        optimizer = BayesianOptimizer(
-            estimator=gpr,
-            X_training=observed_X,
-            y_training=np.multiply(-1, observed_y),
-            query_strategy=max_EI,
-        )
-
-        sample_points = _get_search_space(optimizer, observed_X.shape[1])
-        logger.debug(f'Generated {len(sample_points)} new points to evaluate')
-
-        # Pick the best point to add to the dataset
-        best_point, best_coords = optimizer.query(sample_points)
-        return best_coords[0, :]
 
 
 def select_next_points_botorch(observed_X: List[List[float]], observed_y: List[float]) -> np.ndarray:
@@ -146,9 +44,13 @@ def select_next_points_botorch(observed_X: List[List[float]], observed_y: List[f
     # Clip the energies if needed
     observed_y = np.clip(observed_y, -np.inf, 2 + np.log10(np.clip(observed_y, 1, np.inf)))
 
+    # we should really track the torch device
+    #  .. unfortuantely "MPS" for Apple Silicon doesn't support float64
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     # Convert inputs to torch arrays
-    train_X = torch.tensor(observed_X, dtype=torch.float)
-    train_y = torch.tensor(observed_y, dtype=torch.float)
+    train_X = torch.tensor(observed_X, dtype=torch.float64, device=device)
+    train_y = torch.tensor(observed_y, dtype=torch.float64, device=device)
     train_y = train_y[:, None]
     train_y = standardize(-1 * train_y)
 
@@ -157,7 +59,7 @@ def select_next_points_botorch(observed_X: List[List[float]], observed_y: List[f
         num_dims=train_X.shape[1],
         base_kernel=gpykernels.PeriodicKernel(period_length_prior=NormalPrior(360, 0.1))
     )))
-    mll = ExactMarginalLogLikelihood(gp.likelihood, gp)
+    mll = ExactMarginalLogLikelihood(gp.likelihood, gp).to(device=device)
     fit_gpytorch_model(mll)
 
     # Solve the optimization problem
@@ -191,7 +93,8 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
         (Atoms) optimized geometry
     """
     # Perform an initial relaxation
-    _, init_atoms = relax_structure(atoms, calc)
+    logger.info('Initial relaxation')
+    _, init_atoms = relax_structure(atoms, calc, 50)
     if out_dir is not None:
         with open(out_dir.joinpath('relaxed.xyz'), 'w') as fp:
             simple_write_xyz(fp, [init_atoms])
@@ -237,7 +140,7 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
             add_entry(guess, cur_atoms, energy)
 
     # Save the initial guesses
-    observed_coords = [start_coords, *init_guesses.tolist()]
+    observed_coords = np.array([start_coords, *init_guesses.tolist()])
     observed_energies = [0.] + init_energies
 
     # Loop over many steps
@@ -258,7 +161,7 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
             add_entry(start_coords, cur_atoms, energy)
 
         # Update the search space
-        observed_coords.append(best_coords)
+        observed_coords = np.vstack([observed_coords, best_coords])
         observed_energies.append(energy - start_energy)
 
     # Final relaxations
@@ -272,7 +175,7 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
 
     # Relaxations
     best_atoms.set_constraint()
-    best_energy, best_atoms = relax_structure(best_atoms, calc)
+    best_energy, best_atoms = relax_structure(best_atoms, calc, None)
     logger.info('Performed final relaxation without dihedral constraints.'
                 f' E: {best_energy}. E-E0: {best_energy - start_energy}')
     best_coords = np.array([d.get_angle(best_atoms) for d in dihedrals])

@@ -4,7 +4,7 @@ import os
 
 from ase.calculators.calculator import Calculator
 from ase.constraints import FixInternals
-from ase.optimize import BFGS
+from ase.optimize import LBFGS
 from ase import Atoms
 import numpy as np
 
@@ -14,7 +14,7 @@ from confopt.setup import DihedralInfo
 def evaluate_energy(angles: Union[List[float], np.ndarray], atoms: Atoms,
                     dihedrals: List[DihedralInfo], calc: Calculator,
                     relax: bool = True) -> Tuple[float, Atoms]:
-    """Compute the energy of a cysteine molecule given dihedral angles
+    """Compute the energy of a molecule given dihedral angles
 
     Args:
         angles: List of dihedral angles
@@ -40,26 +40,35 @@ def evaluate_energy(angles: Union[List[float], np.ndarray], atoms: Atoms,
     # If not relaxed, just compute the energy
     if not relax:
         return calc.get_potential_energy(atoms), atoms
-        
+
+    # set the dihedral constraints and relax
     atoms.set_constraint()
     atoms.set_constraint(FixInternals(dihedrals_deg=dih_cnsts))
 
-    return relax_structure(atoms, calc)
+    # A quick relaxation to get the structure in the right ballpark
+    return relax_structure(atoms, calc, 50)
 
 
-def relax_structure(atoms: Atoms, calc: Calculator) -> Tuple[float, Atoms]:
+def relax_structure(atoms: Atoms, calc: Calculator, steps: int) -> Tuple[float, Atoms]:
     """Relax and return the energy of the ground state
     
     Args:
         atoms: Atoms object to be optimized
         calc: Calculator used to compute energy/gradients
+        steps: Number of steps to perform (or None to run until convergence)
     Returns:
         Energy of the minimized structure
     """
 
     atoms.set_calculator(calc)
 
-    dyn = BFGS(atoms, logfile=os.devnull)
-    dyn.run(fmax=1e-3)
+    try:
+        dyn = LBFGS(atoms, logfile=os.devnull)
+        if steps is not None:
+            dyn.run(fmax=1e-3, steps=steps)
+        else:
+            dyn.run(fmax=1e-3)
+    except ValueError: # LBFGS failed to converge, probably high energy
+        pass
 
     return atoms.get_potential_energy(), atoms

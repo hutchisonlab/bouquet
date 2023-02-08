@@ -4,16 +4,53 @@ from typing import Tuple, Set, Dict, List
 from dataclasses import dataclass
 from io import StringIO
 import logging
+import os
 
 from ase.io.xyz import read_xyz
 from ase import Atoms
-from openbabel import OBMolBondIter
+from openbabel import openbabel as ob
+from openbabel import pybel
+
 import networkx as nx
 import numpy as np
-import pybel
 
 logger = logging.getLogger(__name__)
 
+def get_initial_structure_from_file(filename: str) -> Tuple[Atoms, pybel.Molecule]:
+    """Generate an initial molecular structure from a file
+
+    Args:
+        filename: Path to a file containing the structure (including extension)
+    Returns:
+        Generate an Atoms object and a pybel Molecule
+    """
+
+    # Make the 3D structure
+    extension = os.path.splitext(filename)[1][1:]
+    mol = next(pybel.readfile(extension, filename))
+
+    # Cleanup with MMFF94 or UFF
+    ff = pybel._forcefields["mmff94"]
+    success = ff.Setup(mol.OBMol)
+    if not success:
+        ff = pybel._forcefields["uff"]
+        success = ff.Setup(mol.OBMol)
+
+    if success:
+        # quick cleanup
+        # TODO: make this an option to skip
+        ff.ConjugateGradients(100, 1.0e-3)
+        ff.FastRotorSearch(True) # permute central rotors
+        ff.ConjugateGradients(100, 1.0e-4)
+        # update the coordinates
+        ff.GetCoordinates(mol.OBMol)
+
+    # Convert it to ASE
+    atoms = next(read_xyz(StringIO(mol.write('xyz')), slice(None)))
+    atoms.charge = mol.charge
+    atoms.set_initial_charges([a.formalcharge for a in mol.atoms])
+
+    return atoms, mol
 
 def get_initial_structure(smiles: str) -> Tuple[Atoms, pybel.Molecule]:
     """Generate an initial guess for a molecular structure
@@ -21,7 +58,7 @@ def get_initial_structure(smiles: str) -> Tuple[Atoms, pybel.Molecule]:
     Args:
         smiles: SMILES string
     Returns: 
-        Generate an Atoms object
+        Generate an Atoms object and a pybel Molecule
     """
 
     # Make the 3D structure
@@ -100,7 +137,7 @@ def get_bonding_graph(mol: pybel.Molecule) -> nx.Graph:
         (i, dict(z=a.atomicnum))
         for i, a in enumerate(mol.atoms)
     ])
-    for bond in OBMolBondIter(mol.OBMol):
+    for bond in ob.OBMolBondIter(mol.OBMol):
         g.add_edge(bond.GetBeginAtomIdx() - 1, bond.GetEndAtomIdx() - 1,
                    data={"rotor": bond.IsRotor(), "ring": bond.IsInRing()})
     return g
@@ -206,9 +243,7 @@ def fix_cyclopropenyl(atoms: Atoms, mol: pybel.Molecule) -> Atoms:
             angle = np.dot(bond_vector, normal) / np.linalg.norm(bond_vector)
             final_angle = np.arccos(angle)
             assert np.isclose(final_angle, np.pi / 2).all()
-            
-            
-                              
+
         logger.info(f'Detected {len(rings)} cyclopropenyl rings. Ensured they are planar.')
         return atoms
     
