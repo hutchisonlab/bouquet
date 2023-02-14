@@ -12,9 +12,9 @@ from ase.io.xyz import simple_write_xyz
 import torch
 
 from botorch.optim import optimize_acqf
-from botorch.acquisition import UpperConfidenceBound, ExpectedImprovement
+from botorch.acquisition.analytic import *
 from botorch.models import SingleTaskGP
-from botorch.fit import fit_gpytorch_model
+from botorch.fit import fit_gpytorch_mll
 from botorch.utils import standardize
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from gpytorch import kernels as gpykernels
@@ -44,7 +44,7 @@ def select_next_points_botorch(observed_X: List[List[float]], observed_y: List[f
     # Clip the energies if needed
     observed_y = np.clip(observed_y, -np.inf, 2 + np.log10(np.clip(observed_y, 1, np.inf)))
 
-    # we should really track the torch device
+    # we should track the torch device
     #  .. unfortuantely "MPS" for Apple Silicon doesn't support float64
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -52,23 +52,25 @@ def select_next_points_botorch(observed_X: List[List[float]], observed_y: List[f
     train_X = torch.tensor(observed_X, dtype=torch.float64, device=device)
     train_y = torch.tensor(observed_y, dtype=torch.float64, device=device)
     train_y = train_y[:, None]
-    train_y = standardize(-1 * train_y)
+    train_y = standardize(-1 * train_y) # make this a maximization problem
 
     # Make the GP
-    gp = SingleTaskGP(train_X, train_y, covar_module=gpykernels.ScaleKernel(gpykernels.ProductStructureKernel(
+    gp = SingleTaskGP(train_X, train_y,
+        covar_module=gpykernels.ScaleKernel(gpykernels.ProductStructureKernel(
         num_dims=train_X.shape[1],
         base_kernel=gpykernels.PeriodicKernel(period_length_prior=NormalPrior(360, 0.1))
     )))
     mll = ExactMarginalLogLikelihood(gp.likelihood, gp).to(device=device)
-    fit_gpytorch_model(mll)
+    fit_gpytorch_mll(mll)
 
     # Solve the optimization problem
     #  Following boss, we use Eq. 5 of https://arxiv.org/pdf/1012.2599.pdf with delta=0.1
     n_sampled, n_dim = train_X.shape
-    kappa = np.sqrt(2 * np.log10(
-        np.power(n_sampled, n_dim / 2 + 2) * np.pi ** 2 / (3.0 * 0.1)
-    ))  # Results in more exploration over time
-    ei = UpperConfidenceBound(gp, kappa)
+    #kappa = np.sqrt(2 * np.log10(
+    #    np.power(n_sampled, n_dim / 2 + 2) * np.pi ** 2 / (3.0 * 0.1)
+    #))  # Results in more exploration over time
+    #ei = UpperConfidenceBound(gp, kappa)
+    ei = ExpectedImprovement(gp, best_f=torch.max(train_y), maximize=True)
     bounds = torch.zeros(2, train_X.shape[1])
     bounds[1, :] = 360
     candidate, acq_value = optimize_acqf(
@@ -129,7 +131,7 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
         add_entry(start_coords, start_atoms, start_energy)
 
     # Make some initial guesses
-    init_guesses = np.random.normal(start_coords, 30, size=(init_steps, len(dihedrals)))
+    init_guesses = np.random.uniform(start_coords, 90, size=(init_steps, len(dihedrals)))
     init_energies = []
     for i, guess in enumerate(init_guesses):
         energy, cur_atoms = evaluate_energy(guess, start_atoms, dihedrals, calc, relax)
@@ -145,14 +147,18 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
 
     # Loop over many steps
     cur_atoms = start_atoms.copy()
+    best_atoms = start_atoms.copy()
+    best_step = 0
     for step in range(n_steps):
         # Make a new search space
-        best_coords = select_next_points_botorch(observed_coords, observed_energies)
+        next_coords = select_next_points_botorch(observed_coords, observed_energies)
 
         # Compute the energies of those points
-        energy, cur_atoms = evaluate_energy(best_coords, cur_atoms, dihedrals, calc, relax)
+        energy, cur_atoms = evaluate_energy(next_coords, start_atoms, dihedrals, calc, relax)
         logger.info(f'Evaluated energy in step {step+1}/{n_steps}. Energy-E0: {energy-start_energy}')
         if energy - start_energy < np.min(observed_energies) and out_dir is not None:
+            best_step = step
+            best_atoms = cur_atoms.copy()
             with open(out_dir.joinpath('current_best.xyz'), 'w') as fp:
                 simple_write_xyz(fp, [cur_atoms])
 
@@ -161,11 +167,10 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
             add_entry(start_coords, cur_atoms, energy)
 
         # Update the search space
-        observed_coords = np.vstack([observed_coords, best_coords])
+        observed_coords = np.vstack([observed_coords, next_coords])
         observed_energies.append(energy - start_energy)
 
     # Final relaxations
-    best_atoms = cur_atoms.copy()
     best_coords = observed_coords[np.argmin(observed_energies)]
     best_energy, best_atoms = evaluate_energy(best_coords, best_atoms, dihedrals, calc)
     logger.info('Performed final relaxation with dihedral constraints.'
@@ -178,6 +183,7 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
     best_energy, best_atoms = relax_structure(best_atoms, calc, None)
     logger.info('Performed final relaxation without dihedral constraints.'
                 f' E: {best_energy}. E-E0: {best_energy - start_energy}')
+    logger.info(f'Best energy found on step {best_step+1}')
     best_coords = np.array([d.get_angle(best_atoms) for d in dihedrals])
     if out_dir is not None:
         add_entry(best_coords, best_atoms, best_energy)
