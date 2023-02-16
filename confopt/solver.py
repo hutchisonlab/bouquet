@@ -181,7 +181,7 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int,
 
     # Relaxations
     best_atoms.set_constraint()
-    best_energy, best_atoms = relax_structure(best_atoms, calc, relaxCalc, None)
+    best_energy, best_atoms = evaluate_energy(best_coords, best_atoms, dihedrals, calc, relaxCalc)
     logger.info('Performed final relaxation without dihedral constraints.'
                 f' E: {best_energy}. E-E0: {best_energy - start_energy}')
     logger.info(f'Best energy found on step {best_step+1}')
