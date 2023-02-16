@@ -16,12 +16,20 @@ logger = logging.getLogger('confsolve')
 if __name__ == "__main__":
     # Parse the command line arguments
     parser = ArgumentParser()
-    parser.add_argument('--smiles', type=str, help='SMILES string of molecule to optimize')
-    parser.add_argument('--file', type=str, help='File containing the structure to optimize')
-    parser.add_argument('--num-steps', type=int, default=32, help='Number of optimization steps to take')
-    parser.add_argument('--init-steps', type=int, default=4, help='Number of initial guesses to make')
-    parser.add_argument('--level', choices=['ani', 'b3lyp', 'b97', 'gfn0', 'gfn2', 'gfnff'], default='gfn2', help='Energy method')
-    parser.add_argument('--relax', action='store_true', help='Relax the non-dihedral degrees of freedom before computing energy')
+    parser.add_argument('--smiles', type=str,
+                        help='SMILES string of molecule to optimize')
+    parser.add_argument('--file', type=str,
+                        help='File containing the structure to optimize')
+    parser.add_argument('--num-steps', type=int, default=32,
+                        help='Number of optimization steps to take')
+    parser.add_argument('--init-steps', type=int, default=4,
+                        help='Number of initial guesses to make')
+    parser.add_argument('--energy', choices=['ani', 'b3lyp', 'b97',
+                        'gfn0', 'gfn2', 'gfnff'], default='gfn2', help='Energy method')
+    parser.add_argument('--optimizer', choices=['ani', 'b3lyp', 'b97',
+                        'gfn0', 'gfn2', 'gfnff'], default='gfnff', help='Optimizer method')
+    parser.add_argument('--relax', action='store_true',
+                        help='Relax the non-dihedral degrees of freedom before computing energy')
     args = parser.parse_args()
 
     if args.smiles is None and args.file is None:
@@ -34,7 +42,8 @@ if __name__ == "__main__":
 
     # Make an output directory
     params_hash = hashlib.sha256(str(args.__dict__).encode()).hexdigest()
-    out_dir = Path(__file__).parent.joinpath(f'solutions/{name}-{args.level}-{params_hash[-6:]}')
+    out_dir = Path(__file__).parent.joinpath(
+        f'solutions/{name}-{args.energy}-{params_hash[-6:]}')
     out_dir.mkdir(parents=True, exist_ok=True)
     with out_dir.joinpath('run_params.json').open('w') as fp:
         json.dump(args.__dict__, fp)
@@ -67,28 +76,55 @@ if __name__ == "__main__":
         simple_write_xyz(fp, [init_atoms])
 
     # Set up the optimization problem
-    if args.level == 'ani':
+    if args.energy == 'ani':
         import torchani
         calc = torchani.models.ANI2x().ase()
-    elif args.level == 'xtb' or args.level == 'gfn2':
+    elif args.energy == 'xtb' or args.energy == 'gfn2':
         from xtb.ase.calculator import XTB
-        calc = XTB() #gfn2
-    elif args.level == 'gfn0':
+        calc = XTB()  # gfn2
+    elif args.energy == 'gfn0':
         from xtb.ase.calculator import XTB
         calc = XTB(method='gfn0')
-    elif args.level == 'gfnff':
+    elif args.energy == 'gfnff':
         from xtb.ase.calculator import XTB
         calc = XTB(method='gfnff')
-    elif args.level == 'b3lyp':
+    elif args.energy == 'b3lyp':
         from ase.calculators.psi4 import Psi4
-        calc = Psi4(method='b3lyp-D3MBJ2B', basis='def2-svp', num_threads=4, multiplicity=1, charge=0)
-    elif args.level == 'b97':
+        calc = Psi4(method='b3lyp-D3MBJ2B', basis='def2-svp',
+                    num_threads=4, multiplicity=1, charge=0)
+    elif args.energy == 'b97':
         from ase.calculators.psi4 import Psi4
-        calc = Psi4(method='b97-d3bj', basis='def2-svp', num_threads=4, multiplicity=1, charge=0)
+        calc = Psi4(method='b97-d3bj', basis='def2-svp',
+                    num_threads=4, multiplicity=1, charge=0)
     else:
-        raise ValueError(f'Unrecognized QC level: {args.level}')
+        raise ValueError(f'Unrecognized QC method: {args.energy}')
+    
+    # default to using the same method for relaxation
+    relaxCalc = calc
+    if args.optimizer == 'ani':
+        import torchani
+        relaxCalc = torchani.models.ANI2x().ase()
+    elif args.optimizer == 'xtb' or args.optimizer == 'gfn2':
+        from xtb.ase.calculator import XTB
+        relaxCalc = XTB()  # gfn2
+    elif args.optimizer == 'gfn0':
+        from xtb.ase.calculator import XTB
+        relaxCalc = XTB(method='gfn0')
+    elif args.optimizer == 'gfnff':
+        from xtb.ase.calculator import XTB
+        relaxCalc = XTB(method='gfnff')
+    elif args.optimizer == 'b3lyp':
+        from ase.calculators.psi4 import Psi4
+        relaxCalc = Psi4(method='b3lyp-D3MBJ2B', basis='def2-svp',
+                    num_threads=4, multiplicity=1, charge=0)
+    elif args.optimizer == 'b97':
+        from ase.calculators.psi4 import Psi4
+        relaxCalc = Psi4(method='b97-d3bj', basis='def2-svp',
+                    num_threads=4, multiplicity=1, charge=0)
+    else:
+        raise ValueError(f'Unrecognized QC method: {args.optimizer}')
 
-    final_atoms = run_optimization(init_atoms, dihedrals, args.num_steps, calc, args.init_steps,
+    final_atoms = run_optimization(init_atoms, dihedrals, args.num_steps, calc, relaxCalc, args.init_steps,
                                    out_dir, relax=args.relax)
 
     # Save the final structure

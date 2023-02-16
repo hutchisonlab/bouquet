@@ -79,7 +79,8 @@ def select_next_points_botorch(observed_X: List[List[float]], observed_y: List[f
     return candidate.detach().numpy()[0, :]
 
 
-def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, calc: Calculator,
+def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
+                     calc: Calculator, relaxCalc: Calculator,
                      init_steps: int, out_dir: Optional[Path], relax: bool = True) -> Atoms:
     """Optimize the structure of a molecule by iteratively changing the dihedral angles
 
@@ -103,7 +104,7 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
 
     # Evaluate initial point
     start_coords = np.array([d.get_angle(init_atoms) for d in dihedrals])
-    start_energy, start_atoms = evaluate_energy(start_coords, atoms, dihedrals, calc, relax)
+    start_energy, start_atoms = evaluate_energy(start_coords, atoms, dihedrals, calc, relaxCalc, relax)
     logger.info(f'Computed initial energy: {start_energy}')
 
     # Begin a structure log, if output available
@@ -131,10 +132,10 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
         add_entry(start_coords, start_atoms, start_energy)
 
     # Make some initial guesses
-    init_guesses = np.random.uniform(start_coords, 90, size=(init_steps, len(dihedrals)))
+    init_guesses = np.random.normal(start_coords, 90, size=(init_steps, len(dihedrals)))
     init_energies = []
     for i, guess in enumerate(init_guesses):
-        energy, cur_atoms = evaluate_energy(guess, start_atoms, dihedrals, calc, relax)
+        energy, cur_atoms = evaluate_energy(guess, start_atoms, dihedrals, calc, relaxCalc, relax)
         init_energies.append(energy - start_energy)
         logger.info(f'Evaluated initial guess {i+1}/{init_steps}. Energy-E0: {energy-start_energy}')
 
@@ -154,7 +155,7 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
         next_coords = select_next_points_botorch(observed_coords, observed_energies)
 
         # Compute the energies of those points
-        energy, cur_atoms = evaluate_energy(next_coords, start_atoms, dihedrals, calc, relax)
+        energy, cur_atoms = evaluate_energy(next_coords, start_atoms, dihedrals, calc, relaxCalc, relax)
         logger.info(f'Evaluated energy in step {step+1}/{n_steps}. Energy-E0: {energy-start_energy}')
         if energy - start_energy < np.min(observed_energies) and out_dir is not None:
             best_step = step
@@ -172,7 +173,7 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
 
     # Final relaxations
     best_coords = observed_coords[np.argmin(observed_energies)]
-    best_energy, best_atoms = evaluate_energy(best_coords, best_atoms, dihedrals, calc)
+    best_energy, best_atoms = evaluate_energy(best_coords, best_atoms, dihedrals, calc, relaxCalc)
     logger.info('Performed final relaxation with dihedral constraints.'
                 f'E: {best_energy}. E-E0: {best_energy - start_energy}')
     if out_dir is not None:
@@ -180,7 +181,7 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
 
     # Relaxations
     best_atoms.set_constraint()
-    best_energy, best_atoms = relax_structure(best_atoms, calc, None)
+    best_energy, best_atoms = relax_structure(best_atoms, calc, relaxCalc, None)
     logger.info('Performed final relaxation without dihedral constraints.'
                 f' E: {best_energy}. E-E0: {best_energy - start_energy}')
     logger.info(f'Best energy found on step {best_step+1}')

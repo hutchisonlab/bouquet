@@ -13,7 +13,7 @@ from confopt.setup import DihedralInfo
 
 def evaluate_energy(angles: Union[List[float], np.ndarray], atoms: Atoms,
                     dihedrals: List[DihedralInfo], calc: Calculator,
-                    relax: bool = True) -> Tuple[float, Atoms]:
+                    relaxCalc: Calculator, relax: bool = True) -> Tuple[float, Atoms]:
     """Compute the energy of a molecule given dihedral angles
 
     Args:
@@ -46,7 +46,7 @@ def evaluate_energy(angles: Union[List[float], np.ndarray], atoms: Atoms,
     atoms.set_constraint(FixInternals(dihedrals_deg=dih_cnsts))
 
     # A quick relaxation to get the structure in the right ballpark
-    return relax_structure(atoms, calc, 50)
+    return relax_structure(atoms, relaxCalc, 50)
 
 
 def relax_structure(atoms: Atoms, calc: Calculator, steps: int) -> Tuple[float, Atoms]:
