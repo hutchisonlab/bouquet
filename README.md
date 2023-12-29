@@ -1,4 +1,7 @@
-# Conformer Optimization
+# 🌻 BOUQUET
+
+Generate beautiful ensembles of molecular geometries
+"**B**ayesian **O**ptimization **U**sing **QU**antum **E**nergy **T**ool"
 
 This repo contains code for optimizing conformers using active learning and quantum chemistry computations.
 
