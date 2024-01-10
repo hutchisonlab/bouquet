@@ -11,6 +11,7 @@ from ase.calculators.calculator import Calculator
 from ase.io.xyz import simple_write_xyz
 import torch
 
+import botorch
 from botorch.optim import optimize_acqf
 from botorch.acquisition.analytic import *
 from botorch.models import SingleTaskGP
@@ -22,8 +23,8 @@ from gpytorch.priors import NormalPrior
 
 import numpy as np
 
-from confopt.assess import evaluate_energy, relax_structure
-from confopt.setup import DihedralInfo
+from bouquet.assess import evaluate_energy, relax_structure
+from bouquet.setup import DihedralInfo
 
 
 logger = logging.getLogger(__name__)
@@ -81,7 +82,8 @@ def select_next_points_botorch(observed_X: List[List[float]], observed_y: List[f
 
 def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int, 
                      calc: Calculator, relaxCalc: Calculator,
-                     init_steps: int, out_dir: Optional[Path], relax: bool = True) -> Atoms:
+                     init_steps: int, out_dir: Optional[Path], relax: bool = True,
+                     seed: int = 0) -> Atoms:
     """Optimize the structure of a molecule by iteratively changing the dihedral angles
 
     Args:
@@ -92,6 +94,7 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int,
         calc: Calculator to pick the energy
         out_dir: Output path for logging information
         relax: Whether to relax non-dihedral degrees of freedom each step
+        seed: Random seed to use for initial sampling
     Returns:
         (Atoms) optimized geometry
     """
@@ -132,7 +135,8 @@ def run_optimization(atoms: Atoms, dihedrals: List[DihedralInfo], n_steps: int,
         add_entry(start_coords, start_atoms, start_energy)
 
     # Make some initial guesses
-    init_guesses = np.random.normal(start_coords, 90, size=(init_steps, len(dihedrals)))
+    rng = np.random.default_rng(seed)
+    init_guesses = rng.normal(start_coords, 90, size=(init_steps, len(dihedrals)))
     init_energies = []
     for i, guess in enumerate(init_guesses):
         energy, cur_atoms = evaluate_energy(guess, start_atoms, dihedrals, calc, relaxCalc, relax)

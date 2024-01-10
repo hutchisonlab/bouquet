@@ -8,7 +8,7 @@ from ase.optimize import LBFGS
 from ase import Atoms
 import numpy as np
 
-from confopt.setup import DihedralInfo
+from bouquet.setup import DihedralInfo
 
 
 def evaluate_energy(angles: Union[List[float], np.ndarray], atoms: Atoms,

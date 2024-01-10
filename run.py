@@ -5,24 +5,30 @@ import hashlib
 import logging
 import sys
 
+from datetime import datetime
+
 import numpy as np
 from ase.io.xyz import simple_write_xyz
 
-from confopt.setup import *
-from confopt.solver import run_optimization
+from bouquet.setup import *
+from bouquet.solver import run_optimization
 
-logger = logging.getLogger('confsolve')
+logger = logging.getLogger('bouquet')
 
 if __name__ == "__main__":
     # Parse the command line arguments
     parser = ArgumentParser()
+    parser.add_argument('--seed', type=int, default=datetime.now().microsecond,
+                        help='Random seed')
     parser.add_argument('--smiles', type=str,
                         help='SMILES string of molecule to optimize')
     parser.add_argument('--file', type=str,
                         help='File containing the structure to optimize')
+    parser.add_argument('--auto', action='store_true', 
+                        help='Set the number of steps based on the number of dihedrals')
     parser.add_argument('--num-steps', type=int, default=32,
                         help='Number of optimization steps to take')
-    parser.add_argument('--init-steps', type=int, default=4,
+    parser.add_argument('--init-steps', type=int, default=5,
                         help='Number of initial guesses to make')
     parser.add_argument('--energy', choices=['ani', 'b3lyp', 'b97',
                         'gfn0', 'gfn2', 'gfnff'], default='gfn2', help='Energy method')
@@ -43,7 +49,7 @@ if __name__ == "__main__":
     # Make an output directory
     params_hash = hashlib.sha256(str(args.__dict__).encode()).hexdigest()
     out_dir = Path(__file__).parent.joinpath(
-        f'solutions/{name}-{args.energy}-{params_hash[-6:]}')
+        f'solutions/{name}-{args.seed}-{args.energy}-{params_hash[-6:]}')
     out_dir.mkdir(parents=True, exist_ok=True)
     with out_dir.joinpath('run_params.json').open('w') as fp:
         json.dump(args.__dict__, fp)
@@ -58,18 +64,34 @@ if __name__ == "__main__":
 
     # Make the initial guess
     if args.file is None:
+        # this will do some initial cleanup from the SMILES string
         init_atoms, mol = get_initial_structure(args.smiles)
     else:
+        # this will just read the geometry from the file
+        # and parse using Pybel
         init_atoms, mol = get_initial_structure_from_file(args.file)
     logger.info(f'Determined initial structure with {len(init_atoms)} atoms')
 
-    # Fix cycloprop. rings
     # TODO: have optional cleanups
-    init_atoms = fix_cyclopropenyl(init_atoms, mol)
 
     # Detect the dihedral angles
     dihedrals = detect_dihedrals(mol)
     logger.info(f'Detected {len(dihedrals)} dihedral angles')
+
+    # check if we should auto-set the number of steps
+    if args.auto:
+        if len(dihedrals) < 3:
+            # 25 total counting the initial random choices
+            args.num_steps = 20
+        elif len(dihedrals) < 5:
+            # 50 total counting the initial random choices
+            args.num_steps = 45
+        elif len(dihedrals) < 7:
+            # 100 total counting the initial random choices
+            args.num_steps = 95
+        else:
+            # 200 total counting the initial random choices
+            args.num_steps = 195
 
     # Save the initial guess
     with out_dir.joinpath('initial.xyz').open('w') as fp:
