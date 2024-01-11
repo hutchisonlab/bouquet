@@ -23,6 +23,9 @@ from gpytorch.priors import NormalPrior
 
 import numpy as np
 
+import warnings
+warnings.filterwarnings("ignore")
+
 from bouquet.assess import evaluate_energy, relax_structure
 from bouquet.setup import DihedralInfo
 
@@ -65,8 +68,9 @@ def select_next_points_botorch(observed_X: List[List[float]], observed_y: List[f
     fit_gpytorch_mll(mll)
 
     # Solve the optimization problem
-    #  Following boss, we use Eq. 5 of https://arxiv.org/pdf/1012.2599.pdf with delta=0.1
     n_sampled, n_dim = train_X.shape
+    # Following boss, we use Eq. 5 of https://arxiv.org/pdf/1012.2599.pdf
+    #    with delta=0.1
     #kappa = np.sqrt(2 * np.log10(
     #    np.power(n_sampled, n_dim / 2 + 2) * np.pi ** 2 / (3.0 * 0.1)
     #))  # Results in more exploration over time

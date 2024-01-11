@@ -80,18 +80,18 @@ if __name__ == "__main__":
 
     # check if we should auto-set the number of steps
     if args.auto:
-        if len(dihedrals) < 3:
+        if len(dihedrals) <= 3:
             # 25 total counting the initial random choices
-            args.num_steps = 20
-        elif len(dihedrals) < 5:
+            args.num_steps = 25 - args.init_steps
+        elif len(dihedrals) <= 5:
             # 50 total counting the initial random choices
-            args.num_steps = 45
-        elif len(dihedrals) < 7:
+            args.num_steps = 50 - args.init_steps
+        elif len(dihedrals) <= 7:
             # 100 total counting the initial random choices
-            args.num_steps = 95
+            args.num_steps = 100 - args.init_steps
         else:
             # 200 total counting the initial random choices
-            args.num_steps = 195
+            args.num_steps = 200 - args.init_steps
 
     # Save the initial guess
     with out_dir.joinpath('initial.xyz').open('w') as fp:
