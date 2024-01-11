@@ -2,17 +2,14 @@ name: bouquet
 channels:
   - defaults
   - conda-forge
-  - psi4
 dependencies:
   - openbabel
   - networkx
   - pytorch
   - gpytorch
   - botorch
-  - tqdm
-  - psutil
-  - pytest
-  - pip
   - ase
   - torchani
   - xtb-python
+  - psi4
+  - pip
