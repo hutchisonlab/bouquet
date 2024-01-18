@@ -10,7 +10,7 @@ This repo contains code for optimizing conformers using Bayesian optimization fo
 Conformers define the different geometries with the same molecular bonding graph but different coordinates. 
 Finding the lowest-energy conformation is a common task in molecular modeling, and one that often requires significant time to solve.
 We implement optimal experimental design techniques to solve this problem
-following [recent](https://jcheminf.biomedcentral.com/articles/10.1186/s13321-019-0354-7) [emerged](https://pubs.acs.org/doi/full/10.1021/acs.jctc.0c00648)
+following [recent](https://jcheminf.biomedcentral.com/articles/10.1186/s13321-019-0354-7) [work](https://pubs.acs.org/doi/full/10.1021/acs.jctc.0c00648)
 that uses Bayesian optimization find optimize dihedral angles.
 
 ## Installation
